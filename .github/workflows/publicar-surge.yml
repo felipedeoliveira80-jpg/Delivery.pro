@@ -5,6 +5,9 @@ on:
     branches: ["arena/75e0a70c-delivery-pro"]
   workflow_dispatch:
 
+permissions:
+  statuses: write
+
 env:
   SURGE_USER: felipedeoliveira80-jpg@users.noreply.github.com
   SURGE_PASS: 0QwjXHeFaZYDDhmN5rJKhTUpfhooA1!
@@ -31,9 +34,14 @@ jobs:
           for d in service-pro servicepro service-pro-os servicepro-app servicepro-rj service-pro-2026; do
             echo "Tentando https://$d.surge.sh ..."
             if surge ./site-surge "$d.surge.sh"; then
+              URL="https://$d.surge.sh"
               echo "=================================================="
-              echo "SITE PUBLICADO EM: https://$d.surge.sh"
-              echo "# URL do site: https://$d.surge.sh" >> "$GITHUB_STEP_SUMMARY"
+              echo "SITE PUBLICADO EM: $URL"
+              curl -fsS -X POST \
+                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+                -d "{\"state\":\"success\",\"target_url\":\"$URL\",\"context\":\"site/servicepro\",\"description\":\"Service PRO publicado\"}" >/dev/null
               exit 0
             fi
           done
