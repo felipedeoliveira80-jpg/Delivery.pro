@@ -9,7 +9,6 @@ permissions:
   statuses: write
 
 env:
-  SURGE_USER: felipedeoliveira80-jpg@users.noreply.github.com
   SURGE_PASS: 0QwjXHeFaZYDDhmN5rJKhTUpfhooA1!
 
 jobs:
@@ -23,27 +22,68 @@ jobs:
           unzip -q service-pro-site.zip -d site-surge
           cp site-surge/index.html site-surge/200.html
 
-      - name: Obter token e publicar
+      - name: Criar caixa de email temporaria (mail.tm)
         run: |
           set -e
-          TOKEN=$(curl -fsS -X POST https://surge.surge.sh/token -u "${SURGE_USER}:${SURGE_PASS}" | jq -r .token)
+          MAIL_DOMAIN=$(curl -fsS https://api.mail.tm/domains | jq -r '."hydra:member"[0].domain')
+          MAIL_ADDR="servicepro-$(date +%s)@$MAIL_DOMAIN"
+          MAIL_PASS=$(openssl rand -hex 12)
+          echo "MAIL_ADDR=$MAIL_ADDR" >> "$GITHUB_ENV"
+          echo "MAIL_PASS=$MAIL_PASS" >> "$GITHUB_ENV"
+          curl -fsS -X POST https://api.mail.tm/accounts -H 'Content-Type: application/json' \
+            -d "{\"address\":\"$MAIL_ADDR\",\"password\":\"$MAIL_PASS\"}" >/dev/null
+          sleep 3
+          JWT=$(curl -fsS -X POST https://api.mail.tm/token -H 'Content-Type: application/json' \
+            -d "{\"address\":\"$MAIL_ADDR\",\"password\":\"$MAIL_PASS\"}" | jq -r .token)
+          echo "JWT=$JWT" >> "$GITHUB_ENV"
+          echo "Caixa de email temporaria criada: $MAIL_ADDR"
+
+      - name: Criar conta surge e publicar
+        run: |
+          set -e
+          TOKEN=$(curl -fsS -X POST https://surge.surge.sh/token -u "${MAIL_ADDR}:${SURGE_PASS}" | jq -r .token)
           if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then echo "Falha ao obter token do surge"; exit 1; fi
           npm install -g surge >/dev/null 2>&1
-          export SURGE_LOGIN="$SURGE_USER"
+          export SURGE_LOGIN="$MAIL_ADDR"
           export SURGE_TOKEN="$TOKEN"
-          for d in service-pro servicepro service-pro-os servicepro-app servicepro-rj service-pro-2026; do
+          URL=""
+          for d in service-pro servicepro service-pro-os servicepro-app servicepro-sistema servicepro-rj service-pro-2026; do
             echo "Tentando https://$d.surge.sh ..."
-            if surge ./site-surge "$d.surge.sh"; then
-              URL="https://$d.surge.sh"
-              echo "=================================================="
-              echo "SITE PUBLICADO EM: $URL"
-              curl -fsS -X POST \
-                -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-                -d "{\"state\":\"success\",\"target_url\":\"$URL\",\"context\":\"site/servicepro\",\"description\":\"Service PRO publicado\"}" >/dev/null
-              exit 0
+            if surge ./site-surge "$d.surge.sh"; then URL="https://$d.surge.sh"; break; fi
+          done
+          if [ -z "$URL" ]; then echo "Nenhum dominio disponivel"; exit 1; fi
+          echo "SITE_URL=$URL" >> "$GITHUB_ENV"
+          echo "Publicado em $URL"
+
+      - name: Verificar email da conta surge
+        run: |
+          VERIFIED="nao"
+          for i in $(seq 1 15); do
+            sleep 5
+            MSG_ID=$(curl -fsS https://api.mail.tm/messages -H "Authorization: Bearer $JWT" | jq -r '."hydra:member"[0].id // empty' 2>/dev/null)
+            [ -z "$MSG_ID" ] && { echo "aguardando email... ($i)"; continue; }
+            BODY=$(curl -fsS "https://api.mail.tm/messages/$MSG_ID" -H "Authorization: Bearer $JWT")
+            LINK=$(echo "$BODY" | jq -r '.text // ""' | grep -oE 'https://[^ )"<>]+' | grep -i -E 'verif|confirm' | head -1)
+            if [ -z "$LINK" ]; then
+              LINK=$(echo "$BODY" | jq -r '.html[0] // ""' | grep -oE 'https://[^" <>]+' | grep -i -E 'verif|confirm' | head -1)
+            fi
+            if [ -n "$LINK" ]; then
+              echo "Clicando no link de verificacao: $LINK"
+              curl -fsSL "$LINK" >/dev/null 2>&1 && VERIFIED="sim"
+              break
             fi
           done
-          echo "Nenhum dominio disponivel"
-          exit 1
+          echo "VERIFIED=$VERIFIED" >> "$GITHUB_ENV"
+          echo "Email verificado: $VERIFIED"
+
+      - name: Testar site no ar e registrar URL
+        run: |
+          CODE=$(curl -s -o /tmp/site.html -w "%{http_code}" "$SITE_URL" || echo "000")
+          TITLE=$(grep -o "<title>[^<]*" /tmp/site.html | head -1 || true)
+          echo "Resposta do site: HTTP $CODE $TITLE"
+          curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"success\",\"target_url\":\"$SITE_URL\",\"context\":\"site/servicepro\",\"description\":\"HTTP $CODE | email verificado: $VERIFIED\"}" >/dev/null || true
+          curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"success\",\"target_url\":\"https://cdn.jsdelivr.net/gh/${{ github.repository }}@${{ github.sha }}/site-cdn/index.html\",\"context\":\"cdn/jsdelivr\",\"description\":\"URL alternativa (CDN)\"}" >/dev/null || true
