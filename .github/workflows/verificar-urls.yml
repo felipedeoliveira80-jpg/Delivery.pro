@@ -1,0 +1,40 @@
+name: Verificar URLs publicadas
+
+on:
+  push:
+    branches: ["arena/75e0a70c-delivery-pro"]
+  workflow_dispatch:
+
+permissions:
+  statuses: write
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Testar todas as URLs candidatas
+        run: |
+          set -e
+          SHA="${{ github.sha }}"
+          REPO="${{ github.repository }}"
+          post() {
+            curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/statuses/$SHA" \
+              -d "{\"state\":\"$1\",\"target_url\":\"$2\",\"context\":\"$3\",\"description\":\"$4\"}" >/dev/null || true
+          }
+          test_url() {
+            local url="$1"; local ctx="$2"
+            local out=$(curl -s -o /tmp/t.html -w "%{http_code} %{content_type}" -L --max-time 25 "$url" || echo "000 erro")
+            local title=$(grep -o "<title>[^<]*" /tmp/t.html 2>/dev/null | head -1 | sed 's/<title>//' | tr -d '"' || true)
+            echo "[$ctx] $url -> $out | $title"
+            if echo "$out" | grep -q "^200"; then
+              post success "$url" "$ctx" "$out | $title"
+            else
+              post failure "$url" "$ctx" "$out | $title"
+            fi
+          }
+          test_url "https://service-pro-os.surge.sh" "check/surge"
+          test_url "https://cdn.jsdelivr.net/gh/$REPO@$SHA/site-cdn/index.html" "check/jsdelivr"
+          test_url "https://raw.githack.com/$REPO/$SHA/site-cdn/index.html" "check/githack"
+          test_url "https://rawcdn.githack.com/$REPO/$SHA/site-cdn/index.html" "check/rawcdn-githack"
+          test_url "https://cdn.statically.io/gh/$REPO/$SHA/site-cdn/index.html" "check/statically"
