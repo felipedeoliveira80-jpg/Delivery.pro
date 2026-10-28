@@ -656,6 +656,9 @@ export function FloatingCart({
   };
 
   const handleProceedToCheckout = () => {
+    toast.error("Pedidos online temporariamente em manutenção de segurança.");
+    return;
+
     setCartStep("order-type");
   };
 

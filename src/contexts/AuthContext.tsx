@@ -1,146 +1,39 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
-
-interface User {
-  id: string;
-  email: string;
-  firstName: string | null;
-  lastName: string | null;
-  role: "admin" | "staff";
-}
-
-interface AuthContextType {
-  user: User | null;
-  login: (email: string, password: string) => Promise<void>;
-  signup: (
-    email: string,
-    password: string,
-    firstName: string,
-    lastName: string
-  ) => Promise<void>;
-  logout: () => Promise<void>;
-}
-
+import { toast } from "sonner";
+interface User { id: string; email: string; firstName: string | null; lastName: string | null; role: "admin" | "staff" }
+interface AuthContextType { user: User | null; loading: boolean; login: (email: string, password: string) => Promise<void>; signup: (email: string, password: string, firstName: string, lastName: string) => Promise<void>; logout: () => Promise<void> }
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-const STORAGE_KEY = "@delivery-pro:user";
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => {
-    const storedUser = localStorage.getItem(STORAGE_KEY);
-    return storedUser ? JSON.parse(storedUser) : null;
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
-  const { toast } = useToast();
-
   useEffect(() => {
-    // Verifica se existe um usuário armazenado e redireciona para o dashboard
-    const storedUser = localStorage.getItem(STORAGE_KEY);
-    if (storedUser && !user) {
-      setUser(JSON.parse(storedUser));
-      navigate("/dashboard");
-    }
+    localStorage.removeItem("@delivery-pro:user");
+    let active = true;
+    let version = 0;
+    const sync = async (id?: string) => {
+      const current = ++version;
+      if (!id) { if (active) { setUser(null); setLoading(false); } return; }
+      const { data, error } = await supabase.from("users").select("id,email,first_name,last_name,role").eq("id", id).maybeSingle();
+      if (!active || current !== version) return;
+      setUser(!error && data?.role === "admin" ? { id: data.id, email: data.email, firstName: data.first_name, lastName: data.last_name, role: "admin" } : null);
+      setLoading(false);
+    };
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => { void sync(session?.user.id); });
+    void supabase.auth.getSession().then(({data}) => sync(data.session?.user.id));
+    return () => { active = false; subscription.unsubscribe(); };
   }, []);
-
   const login = async (email: string, password: string) => {
-    try {
-      const { data, error } = await supabase.rpc("authenticate_user", {
-        p_email: email,
-        p_password: password,
-      });
-
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        const userData = data[0];
-        const userObject = {
-          id: userData.id,
-          email: userData.email,
-          firstName: userData.first_name,
-          lastName: userData.last_name,
-          role: userData.role,
-        };
-
-        setUser(userObject);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(userObject));
-
-        navigate("/dashboard");
-        toast({
-          title: "Login realizado com sucesso",
-          description: "Bem-vindo ao Delivery Max!",
-        });
-      } else {
-        toast({
-          title: "Erro no login",
-          description: "E-mail ou senha incorretos",
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
-      console.error("Error during login:", error);
-      toast({
-        title: "Erro no login",
-        description: "Ocorreu um erro ao tentar fazer login",
-        variant: "destructive",
-      });
-    }
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { toast.error("E-mail ou senha inválidos."); return; }
+    const { data: profile } = await supabase.from("users").select("role").eq("id", data.user.id).maybeSingle();
+    if (profile?.role !== "admin") { await supabase.auth.signOut(); toast.error("Esta conta não tem acesso administrativo."); return; }
+    navigate("/dashboard");
   };
-
-  const signup = async (
-    email: string,
-    password: string,
-    firstName: string,
-    lastName: string
-  ) => {
-    try {
-      const { data, error } = await supabase.rpc("create_user", {
-        p_email: email,
-        p_password: password,
-        p_first_name: firstName,
-        p_last_name: lastName,
-      });
-
-      if (error) throw error;
-
-      toast({
-        title: "Conta criada com sucesso",
-        description: "Você já pode fazer login",
-      });
-
-      navigate("/login");
-    } catch (error) {
-      console.error("Error during signup:", error);
-      toast({
-        title: "Erro no cadastro",
-        description: "Ocorreu um erro ao tentar criar sua conta",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const logout = async () => {
-    localStorage.removeItem(STORAGE_KEY);
-    setUser(null);
-    navigate("/login");
-    toast({
-      title: "Logout realizado com sucesso",
-      description: "Até logo!",
-    });
-  };
-
-  return (
-    <AuthContext.Provider value={{ user, login, signup, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  const signup = async () => { toast.error("O cadastro administrativo público está desativado."); };
+  const logout = async () => { await supabase.auth.signOut(); setUser(null); navigate("/login"); };
+  return <AuthContext.Provider value={{ user, loading, login, signup, logout }}>{children}</AuthContext.Provider>;
 }
-
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
-}
+export function useAuth() { const value = useContext(AuthContext); if (!value) throw new Error("AuthProvider obrigatório"); return value; }

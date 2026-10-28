@@ -11,7 +11,21 @@ export default defineConfig({
   },
   plugins: [
     react(),
-  ].filter(Boolean),
+    // Keep critical UI styling in the HTML, even if a cached CSS URL is unavailable.
+    {
+      name: "inline-app-styles",
+      apply: "build",
+      enforce: "post",
+      generateBundle(_options, bundle) {
+        const html = bundle["index.html"];
+        if (!html || html.type !== "asset") return;
+        html.source = String(html.source).replace(/<link\b[^>]*href="([^"]+\.css)"[^>]*>/g, (tag, href) => {
+          const css = bundle[href.replace(/^\//, "")];
+          return css?.type === "asset" ? `<style>${String(css.source).replace(/<\/style/gi, "<\\/style")}</style>` : tag;
+        });
+      },
+    },
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

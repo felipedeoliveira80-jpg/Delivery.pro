@@ -25,3 +25,6 @@ As políticas atuais do banco permitem operações públicas em tabelas administ
 Existe um administrador `admin@deliverymax.com` na tabela legada. A senha não foi consultada nem alterada. Definir acesso seguro com o proprietário, usando e-mail real e recuperação de senha, faz parte da migração de autenticação pendente.
 
 Não foram removidos projetos, tabelas, pedidos, usuários ou sites externos. A publicação externa e o teste ponta a ponta ainda não foram realizados.
+
+## Atualização de segurança
+As notas sobre login legado acima descrevem o estado anterior. Consulte `docs/SECURITY.md`: migração Auth e bloqueios RLS aplicados em 2026-10-28. Checkout/rastreamento público em manutenção preventiva.

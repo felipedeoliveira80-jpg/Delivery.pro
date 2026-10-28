@@ -6,9 +6,10 @@ interface PrivateRouteProps {
 }
 
 export function PrivateRoute({ children }: PrivateRouteProps) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
 
-  if (!user) {
+  if (loading) return <p role="status">Verificando acesso…</p>;
+  if (!user || user.role !== "admin") {
     return <Navigate to="/login" replace />;
   }
 

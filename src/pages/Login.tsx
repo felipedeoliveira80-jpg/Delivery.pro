@@ -21,28 +21,8 @@ export default function Login() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [signupEnabled, setSignupEnabled] = useState(true);
+  const signupEnabled = false;
   const { login, signup } = useAuth();
-
-  useEffect(() => {
-    const loadSignupFlag = () => {
-      try {
-        const stored = localStorage.getItem("signupEnabled");
-        setSignupEnabled(stored === null ? true : stored === "true");
-      } catch (_) {
-        setSignupEnabled(true);
-      }
-    };
-    loadSignupFlag();
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "signupEnabled") {
-        loadSignupFlag();
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,7 +55,7 @@ export default function Login() {
           <CardHeader>
             <CardTitle>Acesso ao Sistema</CardTitle>
             <CardDescription>
-              Entre com suas credenciais ou crie uma nova conta
+              Acesso exclusivo do administrador
             </CardDescription>
           </CardHeader>
 

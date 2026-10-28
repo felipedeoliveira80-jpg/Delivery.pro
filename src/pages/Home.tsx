@@ -383,6 +383,9 @@ export default function Home() {
         cartOpen ? "overflow-hidden h-screen" : ""
       }`}
     >
+      <div role="status" className="bg-amber-100 text-amber-950 p-4 text-center">
+        Pedidos online e rastreamento temporariamente em manutenção de segurança. O cardápio continua disponível.
+      </div>
       <RestaurantHeader />
 
       <div className="flex flex-col flex-1">
