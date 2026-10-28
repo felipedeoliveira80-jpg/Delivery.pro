@@ -1,0 +1,41 @@
+name: Publicar Service PRO (surge.sh)
+
+on:
+  push:
+    branches: ["arena/75e0a70c-delivery-pro"]
+  workflow_dispatch:
+
+env:
+  SURGE_USER: felipedeoliveira80-jpg@users.noreply.github.com
+  SURGE_PASS: 0QwjXHeFaZYDDhmN5rJKhTUpfhooA1!
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar site
+        run: |
+          unzip -q service-pro-site.zip -d site-surge
+          cp site-surge/index.html site-surge/200.html
+
+      - name: Obter token e publicar
+        run: |
+          set -e
+          TOKEN=$(curl -fsS -X POST https://surge.surge.sh/token -u "${SURGE_USER}:${SURGE_PASS}" | jq -r .token)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then echo "Falha ao obter token do surge"; exit 1; fi
+          npm install -g surge >/dev/null 2>&1
+          export SURGE_LOGIN="$SURGE_USER"
+          export SURGE_TOKEN="$TOKEN"
+          for d in service-pro servicepro service-pro-os servicepro-app servicepro-rj service-pro-2026; do
+            echo "Tentando https://$d.surge.sh ..."
+            if surge ./site-surge "$d.surge.sh"; then
+              echo "=================================================="
+              echo "SITE PUBLICADO EM: https://$d.surge.sh"
+              echo "# URL do site: https://$d.surge.sh" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "Nenhum dominio disponivel"
+          exit 1
