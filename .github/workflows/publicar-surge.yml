@@ -37,6 +37,10 @@ jobs:
             -d "{\"address\":\"$MAIL_ADDR\",\"password\":\"$MAIL_PASS\"}" | jq -r .token)
           echo "JWT=$JWT" >> "$GITHUB_ENV"
           echo "Caixa de email temporaria criada: $MAIL_ADDR"
+          # salva credenciais da caixa em um status do commit (para re-verificacao futura)
+          curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"success\",\"target_url\":\"https://mail.tm\",\"context\":\"conta/email\",\"description\":\"$MAIL_ADDR | $MAIL_PASS\"}" >/dev/null || true
 
       - name: Criar conta surge e publicar
         run: |
@@ -54,36 +58,43 @@ jobs:
           if [ -z "$URL" ]; then echo "Nenhum dominio disponivel"; exit 1; fi
           echo "SITE_URL=$URL" >> "$GITHUB_ENV"
           echo "Publicado em $URL"
+          curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"success\",\"target_url\":\"$URL\",\"context\":\"site/servicepro\",\"description\":\"publicado, aguardando verificacao de email\"}" >/dev/null || true
 
-      - name: Verificar email da conta surge
+      - name: Verificar email da conta surge (ate 2 min)
         run: |
           VERIFIED="nao"
-          for i in $(seq 1 15); do
+          for i in $(seq 1 24); do
             sleep 5
-            MSG_ID=$(curl -fsS https://api.mail.tm/messages -H "Authorization: Bearer $JWT" | jq -r '."hydra:member"[0].id // empty' 2>/dev/null)
-            [ -z "$MSG_ID" ] && { echo "aguardando email... ($i)"; continue; }
-            BODY=$(curl -fsS "https://api.mail.tm/messages/$MSG_ID" -H "Authorization: Bearer $JWT")
-            LINK=$(echo "$BODY" | jq -r '.text // ""' | grep -oE 'https://[^ )"<>]+' | grep -i -E 'verif|confirm' | head -1)
-            if [ -z "$LINK" ]; then
-              LINK=$(echo "$BODY" | jq -r '.html[0] // ""' | grep -oE 'https://[^" <>]+' | grep -i -E 'verif|confirm' | head -1)
-            fi
-            if [ -n "$LINK" ]; then
-              echo "Clicando no link de verificacao: $LINK"
-              curl -fsSL "$LINK" >/dev/null 2>&1 && VERIFIED="sim"
-              break
-            fi
+            IDS=$(curl -fsS https://api.mail.tm/messages -H "Authorization: Bearer $JWT" | jq -r '."hydra:member"[]?.id' 2>/dev/null)
+            [ -z "$IDS" ] && { echo "aguardando email... ($i)"; continue; }
+            for MSG_ID in $IDS; do
+              BODY=$(curl -fsS "https://api.mail.tm/messages/$MSG_ID" -H "Authorization: Bearer $JWT")
+              LINKS=$( (echo "$BODY" | jq -r '.text // empty'; echo "$BODY" | jq -r 'try .html[]? // empty' ) | grep -oE 'https://[^ )"<>,]+' | grep -v 'mail.tm' | sort -u )
+              for LINK in $LINKS; do
+                echo "Clicando: $LINK"
+                curl -fsSL "$LINK" -o /dev/null 2>&1 && VERIFIED="sim" 2>/dev/null
+              done
+            done
+            [ "$VERIFIED" = "sim" ] && break
           done
           echo "VERIFIED=$VERIFIED" >> "$GITHUB_ENV"
           echo "Email verificado: $VERIFIED"
 
-      - name: Testar site no ar e registrar URL
+      - name: Re-publicar (garante unpause) e testar
         run: |
+          TOKEN=$(curl -fsS -X POST https://surge.surge.sh/token -u "${MAIL_ADDR}:${SURGE_PASS}" | jq -r .token)
+          export SURGE_LOGIN="$MAIL_ADDR"
+          export SURGE_TOKEN="$TOKEN"
+          surge ./site-surge "${SITE_URL#https://}" || true
+          sleep 3
           CODE=$(curl -s -o /tmp/site.html -w "%{http_code}" "$SITE_URL" || echo "000")
           TITLE=$(grep -o "<title>[^<]*" /tmp/site.html | head -1 || true)
           echo "Resposta do site: HTTP $CODE $TITLE"
           curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d "{\"state\":\"success\",\"target_url\":\"$SITE_URL\",\"context\":\"site/servicepro\",\"description\":\"HTTP $CODE | email verificado: $VERIFIED\"}" >/dev/null || true
+            -d "{\"state\":\"success\",\"target_url\":\"$SITE_URL\",\"context\":\"site/verificacao\",\"description\":\"HTTP $CODE | email confirmado: $VERIFIED | $TITLE\"}" >/dev/null || true
           curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
             -d "{\"state\":\"success\",\"target_url\":\"https://cdn.jsdelivr.net/gh/${{ github.repository }}@${{ github.sha }}/site-cdn/index.html\",\"context\":\"cdn/jsdelivr\",\"description\":\"URL alternativa (CDN)\"}" >/dev/null || true
