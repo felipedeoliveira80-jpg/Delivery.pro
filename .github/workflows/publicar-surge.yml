@@ -16,33 +16,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Preparar site
         run: |
           unzip -q service-pro-site.zip -d site-surge
           cp site-surge/index.html site-surge/200.html
 
-      - name: Criar caixa de email temporaria (mail.tm)
+      - name: Recuperar ou criar caixa de email (mail.tm)
         run: |
           set -e
-          MAIL_DOMAIN=$(curl -fsS https://api.mail.tm/domains | jq -r '."hydra:member"[0].domain')
-          MAIL_ADDR="servicepro-$(date +%s)@$MAIL_DOMAIN"
-          MAIL_PASS=$(openssl rand -hex 12)
+          REPO="${{ github.repository }}"
+          PREV_SHA=$(git rev-parse HEAD~1 2>/dev/null || true)
+          SAVED=""
+          if [ -n "$PREV_SHA" ]; then
+            SAVED=$(curl -fsS -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/commits/$PREV_SHA/status" | jq -r '.statuses[]? | select(.context=="conta/email") | .description' | head -1 || true)
+          fi
+          MAIL_ADDR=""
+          MAIL_PASS=""
+          if echo "$SAVED" | grep -q " | "; then
+            MAIL_ADDR="${SAVED%% | *}"
+            MAIL_PASS="${SAVED##* | }"
+            echo "Reutilizando caixa de email: $MAIL_ADDR"
+          fi
+          get_jwt() {
+            curl -fsS -X POST https://api.mail.tm/token -H 'Content-Type: application/json' \
+              -d "{\"address\":\"$1\",\"password\":\"$2\"}" | jq -r .token 2>/dev/null || true
+          }
+          JWT=""
+          [ -n "$MAIL_ADDR" ] && JWT=$(get_jwt "$MAIL_ADDR" "$MAIL_PASS")
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            MAIL_DOMAIN=$(curl -fsS https://api.mail.tm/domains | jq -r '."hydra:member"[0].domain')
+            MAIL_ADDR="servicepro-$(date +%s)@$MAIL_DOMAIN"
+            MAIL_PASS=$(openssl rand -hex 12)
+            curl -fsS -X POST https://api.mail.tm/accounts -H 'Content-Type: application/json' \
+              -d "{\"address\":\"$MAIL_ADDR\",\"password\":\"$MAIL_PASS\"}" >/dev/null
+            sleep 3
+            JWT=$(get_jwt "$MAIL_ADDR" "$MAIL_PASS")
+            echo "Nova caixa criada: $MAIL_ADDR"
+          fi
           echo "MAIL_ADDR=$MAIL_ADDR" >> "$GITHUB_ENV"
-          echo "MAIL_PASS=$MAIL_PASS" >> "$GITHUB_ENV"
-          curl -fsS -X POST https://api.mail.tm/accounts -H 'Content-Type: application/json' \
-            -d "{\"address\":\"$MAIL_ADDR\",\"password\":\"$MAIL_PASS\"}" >/dev/null
-          sleep 3
-          JWT=$(curl -fsS -X POST https://api.mail.tm/token -H 'Content-Type: application/json' \
-            -d "{\"address\":\"$MAIL_ADDR\",\"password\":\"$MAIL_PASS\"}" | jq -r .token)
           echo "JWT=$JWT" >> "$GITHUB_ENV"
-          echo "Caixa de email temporaria criada: $MAIL_ADDR"
-          # salva credenciais da caixa em um status do commit (para re-verificacao futura)
           curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
             -d "{\"state\":\"success\",\"target_url\":\"https://mail.tm\",\"context\":\"conta/email\",\"description\":\"$MAIL_ADDR | $MAIL_PASS\"}" >/dev/null || true
 
-      - name: Criar conta surge e publicar
+      - name: Publicar no surge (mesma conta)
         run: |
           set -e
           TOKEN=$(curl -fsS -X POST https://surge.surge.sh/token -u "${MAIL_ADDR}:${SURGE_PASS}" | jq -r .token)
@@ -62,19 +83,21 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
             -d "{\"state\":\"success\",\"target_url\":\"$URL\",\"context\":\"site/servicepro\",\"description\":\"publicado, aguardando verificacao de email\"}" >/dev/null || true
 
-      - name: Verificar email da conta surge (ate 2 min)
+      - name: Verificar email (ate 3 min, clica em todos os links)
         run: |
           VERIFIED="nao"
-          for i in $(seq 1 24); do
+          for i in $(seq 1 36); do
             sleep 5
             IDS=$(curl -fsS https://api.mail.tm/messages -H "Authorization: Bearer $JWT" | jq -r '."hydra:member"[]?.id' 2>/dev/null)
             [ -z "$IDS" ] && { echo "aguardando email... ($i)"; continue; }
             for MSG_ID in $IDS; do
               BODY=$(curl -fsS "https://api.mail.tm/messages/$MSG_ID" -H "Authorization: Bearer $JWT")
+              SUBJ=$(echo "$BODY" | jq -r '.subject // ""')
+              echo "Email recebido: $SUBJ"
               LINKS=$( (echo "$BODY" | jq -r '.text // empty'; echo "$BODY" | jq -r 'try .html[]? // empty' ) | grep -oE 'https://[^ )"<>,]+' | grep -v 'mail.tm' | sort -u )
               for LINK in $LINKS; do
                 echo "Clicando: $LINK"
-                curl -fsSL "$LINK" -o /dev/null 2>&1 && VERIFIED="sim" 2>/dev/null
+                curl -fsSL "$LINK" -o /dev/null 2>&1 && VERIFIED="sim"
               done
             done
             [ "$VERIFIED" = "sim" ] && break
@@ -82,15 +105,15 @@ jobs:
           echo "VERIFIED=$VERIFIED" >> "$GITHUB_ENV"
           echo "Email verificado: $VERIFIED"
 
-      - name: Re-publicar (garante unpause) e testar
+      - name: Re-publicar e testar resposta do site
         run: |
           TOKEN=$(curl -fsS -X POST https://surge.surge.sh/token -u "${MAIL_ADDR}:${SURGE_PASS}" | jq -r .token)
           export SURGE_LOGIN="$MAIL_ADDR"
           export SURGE_TOKEN="$TOKEN"
           surge ./site-surge "${SITE_URL#https://}" || true
-          sleep 3
+          sleep 5
           CODE=$(curl -s -o /tmp/site.html -w "%{http_code}" "$SITE_URL" || echo "000")
-          TITLE=$(grep -o "<title>[^<]*" /tmp/site.html | head -1 || true)
+          TITLE=$(grep -o "<title>[^<]*" /tmp/site.html | head -1 | tr -d '"' || true)
           echo "Resposta do site: HTTP $CODE $TITLE"
           curl -fsS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
